@@ -2,114 +2,272 @@ import streamlit as st
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import re
 
 # -----------------------------
 # PAGE CONFIG
 # -----------------------------
-st.set_page_config(page_title="Smart PDF Chatbot", page_icon="📄")
-
-st.title("📄 Smart PDF Chatbot")
-st.write("Upload a PDF and ask questions from it.")
+st.set_page_config(page_title="Smart PDF Chatbot", page_icon="📄", layout="wide")
 
 # -----------------------------
-# SESSION STATE (CHAT HISTORY)
+# SESSION STATE
 # -----------------------------
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []          # list of dicts: {question, answer, sources}
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []           # list of dicts: {text, source, page}
+if "vectorizer" not in st.session_state:
+    st.session_state.vectorizer = None
+if "vectors" not in st.session_state:
+    st.session_state.vectors = None
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = []  # names of files already indexed
 
 # -----------------------------
-# FUNCTION: READ PDF
+# SIDEBAR: SETTINGS
 # -----------------------------
-def extract_pdf_text(file):
+with st.sidebar:
+    st.header("⚙️ Settings")
+
+    api_key = st.text_input(
+        "Anthropic API key (optional)",
+        type="password",
+        help="Paste a key to get a real generated answer written from the retrieved "
+             "passages. Leave blank to just see the best-matching passages instead.",
+    )
+    model_name = st.selectbox(
+        "Model",
+        ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
+        index=0,
+        disabled=not api_key,
+    )
+
+    st.divider()
+    st.subheader("Retrieval")
+    chunk_size = st.slider("Chunk size (characters)", 300, 1500, 700, 50)
+    chunk_overlap = st.slider("Chunk overlap (characters)", 0, 400, 150, 25)
+    top_k = st.slider("Passages to retrieve", 1, 8, 4)
+    min_similarity = st.slider("Minimum relevance", 0.0, 1.0, 0.05, 0.01)
+
+    st.divider()
+    if st.button("🗑️ Clear everything", use_container_width=True):
+        st.session_state.history = []
+        st.session_state.chunks = []
+        st.session_state.vectorizer = None
+        st.session_state.vectors = None
+        st.session_state.processed_files = []
+        st.rerun()
+
+st.title("📄 Smart PDF Chatbot")
+st.caption("Upload one or more PDFs, then chat with them. Retrieval is TF-IDF based; "
+           "answer generation uses Claude if you supply an API key.")
+
+# -----------------------------
+# FUNCTIONS: TEXT EXTRACTION & CHUNKING
+# -----------------------------
+def extract_pdf_pages(file):
+    """Return list of (page_number, page_text)."""
     reader = PdfReader(file)
-    text = ""
-
-    for page in reader.pages:
-        page_text = page.extract_text()
+    pages = []
+    for i, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        page_text = re.sub(r"\s+", " ", page_text).strip()
         if page_text:
-            text += page_text + "\n"
+            pages.append((i, page_text))
+    return pages
 
-    return text
 
-# -----------------------------
-# FUNCTION: CREATE CHUNKS
-# -----------------------------
-def create_chunks(text):
-    sentences = text.split(".")
+def chunk_pages(pages, source_name, size, overlap):
+    """Sliding-window chunking that keeps track of source file + page number."""
     chunks = []
-
-    for s in sentences:
-        s = s.strip()
-        if len(s) > 20:
-            chunks.append(s)
-
+    for page_num, text in pages:
+        if len(text) <= size:
+            chunks.append({"text": text, "source": source_name, "page": page_num})
+            continue
+        start = 0
+        while start < len(text):
+            end = start + size
+            piece = text[start:end].strip()
+            if len(piece) > 30:
+                chunks.append({"text": piece, "source": source_name, "page": page_num})
+            if end >= len(text):
+                break
+            start = end - overlap
     return chunks
 
+
+def build_index(chunks):
+    corpus = [c["text"] for c in chunks]
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    vectors = vectorizer.fit_transform(corpus)
+    return vectorizer, vectors
+
+
+def retrieve(question, vectorizer, vectors, chunks, k, min_sim):
+    q_vec = vectorizer.transform([question])
+    sims = cosine_similarity(q_vec, vectors)[0]
+    ranked_idx = np.argsort(sims)[::-1][:k]
+    results = []
+    for idx in ranked_idx:
+        if sims[idx] >= min_sim:
+            results.append({**chunks[idx], "score": float(sims[idx])})
+    return results
+
+
+def generate_answer_with_claude(question, passages, api_key, model):
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+
+    context_block = "\n\n".join(
+        f"[Passage {i+1} | {p['source']} p.{p['page']}]\n{p['text']}"
+        for i, p in enumerate(passages)
+    )
+
+    system_prompt = (
+        "You are a careful research assistant. Answer the user's question using ONLY "
+        "the passages provided. If the passages do not contain the answer, say so "
+        "clearly instead of guessing. Cite passages inline like [1], [2] matching the "
+        "passage numbers given."
+    )
+
+    message = client.messages.create(
+        model=model,
+        max_tokens=800,
+        system=system_prompt,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Passages:\n\n{context_block}\n\nQuestion: {question}",
+            }
+        ],
+    )
+    return "".join(block.text for block in message.content if block.type == "text")
+
+
+def generate_answer_extractive(passages):
+    """Fallback when no API key is supplied: stitch the retrieved passages together."""
+    if not passages:
+        return "I couldn't find anything in the document that's relevant to that question."
+    lines = ["Here are the most relevant passages I found (no API key was supplied, "
+             "so this is extractive rather than a generated summary):\n"]
+    for i, p in enumerate(passages, start=1):
+        lines.append(f"**[{i}] {p['source']} — p.{p['page']} (relevance {p['score']:.2f})**\n> {p['text']}\n")
+    return "\n".join(lines)
+
+
 # -----------------------------
-# FUNCTION: RETRIEVE BEST MATCH
+# FILE UPLOAD & INDEXING
 # -----------------------------
-def retrieve_answer(chunks, question):
-    docs = chunks + [question]
+uploaded_files = st.file_uploader(
+    "Upload PDF(s)", type="pdf", accept_multiple_files=True
+)
 
-    vectorizer = TfidfVectorizer()
-    vectors = vectorizer.fit_transform(docs)
+if uploaded_files:
+    new_files = [f for f in uploaded_files if f.name not in st.session_state.processed_files]
+    if new_files:
+        with st.spinner(f"Reading and indexing {len(new_files)} file(s)..."):
+            for f in new_files:
+                pages = extract_pdf_pages(f)
+                if not pages:
+                    st.warning(f"⚠️ Couldn't extract any text from **{f.name}** "
+                               f"(it may be a scanned/image-only PDF).")
+                    continue
+                new_chunks = chunk_pages(pages, f.name, chunk_size, chunk_overlap)
+                st.session_state.chunks.extend(new_chunks)
+                st.session_state.processed_files.append(f.name)
 
-    similarity = cosine_similarity(vectors[-1], vectors[:-1])
-    best_index = similarity.argmax()
+        if st.session_state.chunks:
+            st.session_state.vectorizer, st.session_state.vectors = build_index(
+                st.session_state.chunks
+            )
 
-    return chunks[best_index]
+    if st.session_state.processed_files:
+        st.success(
+            f"✅ Indexed {len(st.session_state.processed_files)} file(s), "
+            f"{len(st.session_state.chunks)} chunks: "
+            f"{', '.join(st.session_state.processed_files)}"
+        )
 
-# -----------------------------
-# FUNCTION: GENERATE FINAL ANSWER
-# -----------------------------
-def generate_answer(context, question):
-    return f"""
-📌 Based on the document:
-
-{context}
-
-💡 Answer:
-This section explains that {context.lower()}.
-"""
-
-# -----------------------------
-# FILE UPLOAD
-# -----------------------------
-uploaded_file = st.file_uploader("Upload PDF", type="pdf")
-
-if uploaded_file:
-    with st.spinner("Reading PDF..."):
-        text = extract_pdf_text(uploaded_file)
-
-    chunks = create_chunks(text)
-
-    st.success("PDF loaded successfully!")
-
-    question = st.text_input("Ask your question:")
-
-    if question:
-        with st.spinner("Finding best answer..."):
-            context = retrieve_answer(chunks, question)
-
-        answer = generate_answer(context, question)
-
-        # Save history
-        st.session_state.history.append((question, answer))
-
-        # Display answer
-        st.subheader("🤖 Answer")
-        st.write(answer)
-
-        st.subheader("📌 Source Text")
-        st.info(context)
+has_index = st.session_state.vectorizer is not None and st.session_state.chunks
 
 # -----------------------------
-# CHAT HISTORY
+# CHAT INTERFACE
+# -----------------------------
+st.divider()
+
+# Replay existing history as a chat log
+for turn in st.session_state.history:
+    with st.chat_message("user"):
+        st.write(turn["question"])
+    with st.chat_message("assistant"):
+        st.markdown(turn["answer"])
+        if turn["sources"]:
+            with st.expander("📌 Sources"):
+                for i, p in enumerate(turn["sources"], start=1):
+                    st.markdown(f"**[{i}] {p['source']} — p.{p['page']}** "
+                                f"(relevance {p['score']:.2f})")
+                    st.info(p["text"])
+
+question = st.chat_input(
+    "Ask a question about your PDF(s)..." if has_index else "Upload a PDF to get started"
+)
+
+if question:
+    if not has_index:
+        st.warning("Please upload at least one PDF first.")
+    else:
+        with st.chat_message("user"):
+            st.write(question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Retrieving relevant passages..."):
+                passages = retrieve(
+                    question,
+                    st.session_state.vectorizer,
+                    st.session_state.vectors,
+                    st.session_state.chunks,
+                    top_k,
+                    min_similarity,
+                )
+
+            if api_key:
+                with st.spinner("Generating answer with Claude..."):
+                    try:
+                        answer = generate_answer_with_claude(
+                            question, passages, api_key, model_name
+                        )
+                    except Exception as e:
+                        answer = (f"⚠️ Couldn't reach the Anthropic API ({e}). "
+                                  f"Showing extractive passages instead.\n\n"
+                                  + generate_answer_extractive(passages))
+            else:
+                answer = generate_answer_extractive(passages)
+
+            st.markdown(answer)
+            if passages:
+                with st.expander("📌 Sources"):
+                    for i, p in enumerate(passages, start=1):
+                        st.markdown(f"**[{i}] {p['source']} — p.{p['page']}** "
+                                    f"(relevance {p['score']:.2f})")
+                        st.info(p["text"])
+
+        st.session_state.history.append(
+            {"question": question, "answer": answer, "sources": passages}
+        )
+
+# -----------------------------
+# DOWNLOAD CHAT HISTORY
 # -----------------------------
 if st.session_state.history:
-    st.subheader("🕘 Previous Questions")
-
-    for q, a in reversed(st.session_state.history):
-        st.write(f"**Q:** {q}")
-        st.write(f"**A:** {a}")
-        st.write("---")
+    transcript = "\n\n".join(
+        f"Q: {t['question']}\nA: {t['answer']}" for t in st.session_state.history
+    )
+    st.sidebar.divider()
+    st.sidebar.download_button(
+        "⬇️ Download chat transcript",
+        data=transcript,
+        file_name="chat_transcript.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
