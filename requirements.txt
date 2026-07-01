@@ -1,3 +1,5 @@
 streamlit
 pypdf
 scikit-learn
+numpy
+anthropic
