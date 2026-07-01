@@ -30,27 +30,39 @@ st.markdown(
 
     /* Sidebar */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, var(--sky-blue) 0%, var(--sky-blue-dark) 100%);
+        background-color: #ffffff;
+        border-right: 2px solid var(--sky-blue);
     }
     section[data-testid="stSidebar"] * {
-        color: #ffffff !important;
+        color: #000000 !important;
     }
     section[data-testid="stSidebar"] input,
     section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
         background-color: #ffffff !important;
-        color: #0369a1 !important;
+        color: #000000 !important;
+        border: 1px solid var(--sky-blue);
         border-radius: 8px;
+    }
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        color: var(--sky-blue-dark) !important;
     }
 
     /* Titles */
     h1, h2, h3 {
-        color: var(--sky-blue-dark) !important;
+        color: #000000 !important;
+    }
+
+    /* Body text stays black for readability */
+    .stApp, .stApp p, .stApp li, .stApp span, .stMarkdown {
+        color: #000000;
     }
 
     /* Buttons */
     .stButton > button, .stDownloadButton > button {
         background-color: #ffffff;
-        color: var(--sky-blue-dark);
+        color: #000000;
         border: 2px solid var(--sky-blue);
         border-radius: 10px;
         font-weight: 600;
@@ -69,6 +81,7 @@ st.markdown(
         padding: 0.5rem 0.75rem;
         margin-bottom: 0.5rem;
         box-shadow: 0 1px 4px rgba(14, 165, 233, 0.12);
+        color: #000000;
     }
 
     /* File uploader */
@@ -132,7 +145,11 @@ with st.sidebar:
     chunk_size = st.slider("Chunk size (characters)", 300, 1500, 600, 50)
     chunk_overlap = st.slider("Chunk overlap (characters)", 0, 400, 200, 25)
     top_k = st.slider("Passages to retrieve", 1, 10, 6)
-    min_similarity = st.slider("Minimum relevance", 0.0, 1.0, 0.03, 0.01)
+    min_similarity = st.slider(
+        "Minimum relevance", 0.0, 1.0, 0.7, 0.01,
+        help="Passages scoring below this are ignored. TF-IDF similarity scores "
+             "are naturally on the low side — lower this if you get no results.",
+    )
 
     st.divider()
     if st.button("🗑️ Clear everything", use_container_width=True):
@@ -238,20 +255,25 @@ def generate_answer_with_claude(question, passages, api_key, model):
     )
 
     system_prompt = (
-        "You are a careful research assistant. Answer the user's question using ONLY "
-        "the passages provided. If the passages do not contain the answer, say so "
-        "clearly instead of guessing. Cite passages inline like [1], [2] matching the "
-        "passage numbers given."
+        "You are a precise research assistant. Answer the user's question using ONLY "
+        "the passages provided. Be direct and precise:\n"
+        "- Get straight to the point, no filler or restating the question.\n"
+        "- Prefer short sentences or a tight bullet list over long paragraphs.\n"
+        "- Keep it as brief as possible while still fully answering the question.\n"
+        "- Cite passages inline like [1], [2] matching the passage numbers given.\n"
+        "- If the passages do not contain the answer, say so in one short sentence "
+        "instead of guessing."
     )
 
     message = client.messages.create(
         model=model,
-        max_tokens=800,
+        max_tokens=400,
         system=system_prompt,
         messages=[
             {
                 "role": "user",
-                "content": f"Passages:\n\n{context_block}\n\nQuestion: {question}",
+                "content": f"Passages:\n\n{context_block}\n\nQuestion: {question}\n\n"
+                           f"Answer precisely and concisely.",
             }
         ],
     )
@@ -259,14 +281,23 @@ def generate_answer_with_claude(question, passages, api_key, model):
 
 
 def generate_answer_extractive(passages):
-    """Fallback when no API key is supplied: stitch the retrieved passages together."""
+    """Fallback when no API key is supplied: show short, precise snippets."""
     if not passages:
-        return "I couldn't find anything in the document that's relevant to that question."
-    lines = ["Here are the most relevant passages I found (no API key was supplied, "
-             "so this is extractive rather than a generated summary):\n"]
+        return "No sufficiently relevant passage was found for that question."
+
+    def trim(text, limit=220):
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        cut = text[:limit].rsplit(" ", 1)[0]
+        return cut + " …"
+
+    lines = ["**Top matching passages** (no API key set, so this is extractive, not generated):\n"]
     for i, p in enumerate(passages, start=1):
-        lines.append(f"**[{i}] {p['source']} — p.{p['page']} (relevance {p['score']:.2f})**\n> {p['text']}\n")
-    return "\n".join(lines)
+        lines.append(
+            f"**[{i}] {p['source']} p.{p['page']}** (relevance {p['score']:.2f}) — {trim(p['text'])}"
+        )
+    return "\n\n".join(lines)
 
 
 # -----------------------------
