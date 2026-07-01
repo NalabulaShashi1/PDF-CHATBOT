@@ -14,7 +14,6 @@ import re
 import numpy as np
 import streamlit as st
 from pypdf import PdfReader
-from rank_bm25 import BM25Okapi
 
 # =========================================================
 # PAGE CONFIG + THEME (sky blue & white, black text)
@@ -176,9 +175,52 @@ def tokenize(text):
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+class SimpleBM25:
+    """A small, dependency-free BM25 (Okapi) implementation — avoids relying
+    on an external package that may not get installed on some deploy
+    targets. Only needs numpy, which Streamlit already depends on."""
+
+    def __init__(self, tokenized_docs, k1=1.5, b=0.75):
+        self.k1 = k1
+        self.b = b
+        self.docs = tokenized_docs
+        self.doc_lens = np.array([len(d) for d in tokenized_docs], dtype=float)
+        self.avgdl = self.doc_lens.mean() if len(tokenized_docs) else 0.0
+
+        self.doc_freqs = []  # per-doc term counts
+        df = {}  # document frequency per term
+        for doc in tokenized_docs:
+            counts = {}
+            for term in doc:
+                counts[term] = counts.get(term, 0) + 1
+            self.doc_freqs.append(counts)
+            for term in counts:
+                df[term] = df.get(term, 0) + 1
+
+        n_docs = len(tokenized_docs)
+        self.idf = {
+            term: np.log(1 + (n_docs - freq + 0.5) / (freq + 0.5))
+            for term, freq in df.items()
+        }
+
+    def get_scores(self, query_tokens):
+        scores = np.zeros(len(self.docs))
+        for term in query_tokens:
+            idf = self.idf.get(term)
+            if idf is None:
+                continue
+            for i, counts in enumerate(self.doc_freqs):
+                f = counts.get(term, 0)
+                if f == 0:
+                    continue
+                denom = f + self.k1 * (1 - self.b + self.b * self.doc_lens[i] / (self.avgdl or 1))
+                scores[i] += idf * (f * (self.k1 + 1)) / denom
+        return scores
+
+
 def build_bm25_index(chunks):
     tokenized = [tokenize(c["text"]) for c in chunks]
-    return BM25Okapi(tokenized), tokenized
+    return SimpleBM25(tokenized), tokenized
 
 
 def normalize_scores(scores):
