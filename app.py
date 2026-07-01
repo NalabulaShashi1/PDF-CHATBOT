@@ -11,6 +11,90 @@ import re
 st.set_page_config(page_title="Smart PDF Chatbot", page_icon="📄", layout="wide")
 
 # -----------------------------
+# SKY BLUE & WHITE THEME
+# -----------------------------
+st.markdown(
+    """
+    <style>
+    :root {
+        --sky-blue: #0ea5e9;
+        --sky-blue-light: #e0f2fe;
+        --sky-blue-mid: #7dd3fc;
+        --sky-blue-dark: #0369a1;
+    }
+
+    /* App background */
+    .stApp {
+        background: linear-gradient(180deg, #f0f9ff 0%, #ffffff 45%);
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, var(--sky-blue) 0%, var(--sky-blue-dark) 100%);
+    }
+    section[data-testid="stSidebar"] * {
+        color: #ffffff !important;
+    }
+    section[data-testid="stSidebar"] input,
+    section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
+        background-color: #ffffff !important;
+        color: #0369a1 !important;
+        border-radius: 8px;
+    }
+
+    /* Titles */
+    h1, h2, h3 {
+        color: var(--sky-blue-dark) !important;
+    }
+
+    /* Buttons */
+    .stButton > button, .stDownloadButton > button {
+        background-color: #ffffff;
+        color: var(--sky-blue-dark);
+        border: 2px solid var(--sky-blue);
+        border-radius: 10px;
+        font-weight: 600;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        background-color: var(--sky-blue);
+        color: #ffffff;
+        border-color: var(--sky-blue-dark);
+    }
+
+    /* Chat bubbles */
+    div[data-testid="stChatMessage"] {
+        background-color: #ffffff;
+        border: 1px solid var(--sky-blue-mid);
+        border-radius: 14px;
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 0.5rem;
+        box-shadow: 0 1px 4px rgba(14, 165, 233, 0.12);
+    }
+
+    /* File uploader */
+    section[data-testid="stFileUploaderDropzone"] {
+        background-color: var(--sky-blue-light);
+        border: 2px dashed var(--sky-blue);
+        border-radius: 12px;
+    }
+
+    /* Info / success boxes */
+    div[data-testid="stAlert"] {
+        border-radius: 10px;
+    }
+
+    /* Expander */
+    details {
+        background-color: var(--sky-blue-light);
+        border-radius: 10px;
+        border: 1px solid var(--sky-blue-mid);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -----------------------------
 # SESSION STATE
 # -----------------------------
 if "history" not in st.session_state:
@@ -45,10 +129,10 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Retrieval")
-    chunk_size = st.slider("Chunk size (characters)", 300, 1500, 700, 50)
-    chunk_overlap = st.slider("Chunk overlap (characters)", 0, 400, 150, 25)
-    top_k = st.slider("Passages to retrieve", 1, 8, 4)
-    min_similarity = st.slider("Minimum relevance", 0.0, 1.0, 0.05, 0.01)
+    chunk_size = st.slider("Chunk size (characters)", 300, 1500, 600, 50)
+    chunk_overlap = st.slider("Chunk overlap (characters)", 0, 400, 200, 25)
+    top_k = st.slider("Passages to retrieve", 1, 10, 6)
+    min_similarity = st.slider("Minimum relevance", 0.0, 1.0, 0.03, 0.01)
 
     st.divider()
     if st.button("🗑️ Clear everything", use_container_width=True):
@@ -99,7 +183,9 @@ def chunk_pages(pages, source_name, size, overlap):
 
 def build_index(chunks):
     corpus = [c["text"] for c in chunks]
-    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    vectorizer = TfidfVectorizer(
+        stop_words="english", ngram_range=(1, 2), sublinear_tf=True
+    )
     vectors = vectorizer.fit_transform(corpus)
     return vectorizer, vectors
 
@@ -107,12 +193,39 @@ def build_index(chunks):
 def retrieve(question, vectorizer, vectors, chunks, k, min_sim):
     q_vec = vectorizer.transform([question])
     sims = cosine_similarity(q_vec, vectors)[0]
-    ranked_idx = np.argsort(sims)[::-1][:k]
-    results = []
-    for idx in ranked_idx:
-        if sims[idx] >= min_sim:
-            results.append({**chunks[idx], "score": float(sims[idx])})
-    return results
+
+    # Grab a wider pool than k, then merge neighboring chunks (same source,
+    # adjacent index) into single richer passages so answers get fuller,
+    # more accurate context instead of disconnected fragments.
+    pool_size = min(len(chunks), max(k * 3, 15))
+    ranked_idx = np.argsort(sims)[::-1][:pool_size]
+    candidate_idx = sorted(i for i in ranked_idx if sims[i] >= min_sim)
+
+    merged = []
+    used = set()
+    for idx in candidate_idx:
+        if idx in used:
+            continue
+        group = [idx]
+        used.add(idx)
+        # absorb the immediate neighbor if it's from the same source and
+        # also scored above threshold, giving continuous context
+        if (idx + 1) < len(chunks) and (idx + 1) in candidate_idx \
+                and chunks[idx + 1]["source"] == chunks[idx]["source"]:
+            group.append(idx + 1)
+            used.add(idx + 1)
+
+        text = " ".join(chunks[i]["text"] for i in group)
+        score = float(max(sims[i] for i in group))
+        merged.append({
+            "text": text,
+            "source": chunks[idx]["source"],
+            "page": chunks[idx]["page"],
+            "score": score,
+        })
+
+    merged.sort(key=lambda p: p["score"], reverse=True)
+    return merged[:k]
 
 
 def generate_answer_with_claude(question, passages, api_key, model):
