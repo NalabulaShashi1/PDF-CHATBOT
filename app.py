@@ -5,8 +5,8 @@ import time
 import re
 import hashlib
 from pathlib import Path
-import sys
-from pathlib import Path
+import runpy
+
 
 # Universal root resolution for Streamlit Cloud & local execution
 file_path = Path(__file__).resolve()
@@ -22,12 +22,9 @@ else:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Execute main UI
-from src.ui import app
-# Add project root to sys.path
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+# Execute main UI script directly
+ui_app_path = ROOT_DIR / "src" / "ui" / "app.py"
+runpy.run_path(str(ui_app_path), run_name="__main__")
 
 import streamlit as st
 import pandas as pd
