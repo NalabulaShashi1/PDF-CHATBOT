@@ -5,7 +5,25 @@ import time
 import re
 import hashlib
 from pathlib import Path
+import sys
+from pathlib import Path
 
+# Universal root resolution for Streamlit Cloud & local execution
+file_path = Path(__file__).resolve()
+if (file_path.parent / "src").exists():
+    ROOT_DIR = file_path.parent
+elif (file_path.parent.parent / "src").exists():
+    ROOT_DIR = file_path.parent.parent
+elif (file_path.parent.parent.parent / "src").exists():
+    ROOT_DIR = file_path.parent.parent.parent
+else:
+    ROOT_DIR = file_path.parent
+
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# Execute main UI
+from src.ui import app
 # Add project root to sys.path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
