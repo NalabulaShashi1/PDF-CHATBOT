@@ -6,23 +6,27 @@ import re
 import hashlib
 from pathlib import Path
 
-# Universal root resolution for Streamlit Cloud & local execution
-file_path = Path(__file__).resolve()
-if (file_path.parent / "src").exists():
-    ROOT_DIR = file_path.parent
-elif (file_path.parent.parent / "src").exists():
-    ROOT_DIR = file_path.parent.parent
-elif (file_path.parent.parent.parent / "src").exists():
-    ROOT_DIR = file_path.parent.parent.parent
-else:
-    ROOT_DIR = file_path.parent
+# Bulletproof Repository Root Finder for Streamlit Cloud & Local
+current_dir = Path(__file__).resolve().parent
+repo_root = current_dir
+while repo_root != repo_root.parent:
+    if (repo_root / "src").is_dir() and (repo_root / "src" / "config.py").is_file():
+        break
+    repo_root = repo_root.parent
 
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+
+from src.config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
+from src.analytics.pdf_parser import PDFParser, ExtractedDocument
+from src.analytics.text_profiler import TextProfiler, DocumentAnalytics
+from src.rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
 import plotly.express as px
 import plotly.graph_objects as go
 
