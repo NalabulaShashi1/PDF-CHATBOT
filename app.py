@@ -6,11 +6,11 @@ import re
 import hashlib
 from pathlib import Path
 
-# Bulletproof sys.path insertion for Streamlit Cloud & local execution
+# Add repo root and src directory to sys.path for Streamlit Cloud
 file_dir = Path(__file__).resolve().parent
-for p in [file_dir, file_dir.parent, file_dir.parent.parent]:
+for p in [file_dir, file_dir / "src", file_dir.parent, file_dir.parent / "src", file_dir.parent.parent]:
     p_str = str(p)
-    if p_str not in sys.path:
+    if p.exists() and p_str not in sys.path:
         sys.path.insert(0, p_str)
 
 import streamlit as st
@@ -19,16 +19,25 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# Flexible imports supporting both package (src.) and flat layouts
+# Per-module resilient import resolution for Streamlit Cloud
 try:
     from src.config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
-    from src.analytics.pdf_parser import PDFParser, ExtractedDocument
-    from src.analytics.text_profiler import TextProfiler, DocumentAnalytics
-    from src.rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
 except ImportError:
     from config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
+
+try:
+    from src.analytics.pdf_parser import PDFParser, ExtractedDocument
+except ImportError:
     from analytics.pdf_parser import PDFParser, ExtractedDocument
+
+try:
+    from src.analytics.text_profiler import TextProfiler, DocumentAnalytics
+except ImportError:
     from analytics.text_profiler import TextProfiler, DocumentAnalytics
+
+try:
+    from src.rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
+except ImportError:
     from rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
 
 # Configure Streamlit Page
