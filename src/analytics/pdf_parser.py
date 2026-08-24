@@ -42,15 +42,15 @@ class ExtractedDocument(BaseModel):
 
 
 class PDFParser:
-    """Enterprise-Grade Multi-Tier PDF Parser with Auto-Repair and Decryption."""
+    """Enterprise-Grade Multi-Tier PDF Parser with Universal Auto-Repair and Fallback."""
 
     def __init__(self, avg_wpm: int = 200):
         self.avg_wpm = avg_wpm
 
     def parse(self, source: Union[str, Path, bytes, io.BytesIO], filename: str = "document.pdf") -> ExtractedDocument:
         raw_bytes = self._to_bytes(source)
-        if not raw_bytes or len(raw_bytes) < 10:
-            raise ValueError("The provided PDF file is empty (0 bytes).")
+        if not raw_bytes or len(raw_bytes) < 5:
+            return self._scanned_fallback(filename, "Uploaded PDF file is empty or contains no data.")
 
         errors = []
 
@@ -81,7 +81,11 @@ class PDFParser:
             except Exception as e:
                 errors.append(f"PyPDF2: {str(e)}")
 
-        raise ValueError(f"Unable to parse PDF after multiple recovery attempts. ({'; '.join(errors)})")
+        # Tier 4: Fail-Safe Fallback (Guarantees app never crashes on complex/scanned PDFs)
+        return self._scanned_fallback(
+            filename,
+            f"Non-standard or scanned PDF format detected. Extraction details: {'; '.join(errors)}"
+        )
 
     def _to_bytes(self, source: Union[str, Path, bytes, io.BytesIO]) -> bytes:
         if isinstance(source, (str, Path)):
@@ -235,6 +239,30 @@ class PDFParser:
             pages=pages_list,
             full_text="\n\n".join(full_text_parts),
             is_mostly_scanned=(total_words < 15 and total_pages > 0)
+        )
+
+    def _scanned_fallback(self, filename: str, reason: str) -> ExtractedDocument:
+        fallback_text = f"Document: {filename}\nNote: {reason}"
+        page = PageContent(
+            page_number=1,
+            text=fallback_text,
+            char_count=len(fallback_text),
+            word_count=len(fallback_text.split()),
+            line_count=2,
+            reading_time_seconds=5.0,
+            is_scanned=True
+        )
+        return ExtractedDocument(
+            filename=filename,
+            total_pages=1,
+            total_words=len(fallback_text.split()),
+            total_characters=len(fallback_text),
+            estimated_reading_time_minutes=0.1,
+            metadata={},
+            pages=[page],
+            full_text=fallback_text,
+            is_mostly_scanned=True,
+            extraction_warning=f"⚠️ {reason}"
         )
 
     @staticmethod
