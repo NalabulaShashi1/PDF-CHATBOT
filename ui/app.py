@@ -6,16 +6,12 @@ import re
 import hashlib
 from pathlib import Path
 
-# Bulletproof Repository Root Finder for Streamlit Cloud & Local
-current_dir = Path(__file__).resolve().parent
-repo_root = current_dir
-while repo_root != repo_root.parent:
-    if (repo_root / "src").is_dir() and (repo_root / "src" / "config.py").is_file():
-        break
-    repo_root = repo_root.parent
-
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
+# Add repo root and src directory to sys.path for Streamlit Cloud
+file_dir = Path(__file__).resolve().parent
+for p in [file_dir, file_dir / "src", file_dir.parent, file_dir.parent / "src", file_dir.parent.parent]:
+    p_str = str(p)
+    if p.exists() and p_str not in sys.path:
+        sys.path.insert(0, p_str)
 
 import streamlit as st
 import pandas as pd
@@ -23,10 +19,26 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
-from src.analytics.pdf_parser import PDFParser, ExtractedDocument
-from src.analytics.text_profiler import TextProfiler, DocumentAnalytics
-from src.rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
+# Per-module resilient import resolution for Streamlit Cloud
+try:
+    from src.config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
+except ImportError:
+    from config import SAMPLE_DIR, DEFAULT_TOP_K, HYBRID_ALPHA, GEMINI_API_KEY
+
+try:
+    from src.analytics.pdf_parser import PDFParser, ExtractedDocument
+except ImportError:
+    from analytics.pdf_parser import PDFParser, ExtractedDocument
+
+try:
+    from src.analytics.text_profiler import TextProfiler, DocumentAnalytics
+except ImportError:
+    from analytics.text_profiler import TextProfiler, DocumentAnalytics
+
+try:
+    from src.rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
+except ImportError:
+    from rag.chatbot import SmartPDFChatbot, ChatResponse, Citation
 
 # Configure Streamlit Page
 st.set_page_config(
@@ -259,7 +271,10 @@ with st.sidebar:
         if st.button("📑 Sample Report", use_container_width=True):
             sample_pdf_path = SAMPLE_DIR / "ai_in_healthcare_report.pdf"
             if not sample_pdf_path.exists():
-                from scripts.create_sample_pdf import generate_sample_report
+                try:
+                    from scripts.create_sample_pdf import generate_sample_report
+                except ImportError:
+                    from create_sample_pdf import generate_sample_report
                 generate_sample_report(str(sample_pdf_path))
             with open(sample_pdf_path, "rb") as f:
                 if process_uploaded_bytes(f.read(), "ai_in_healthcare_report.pdf"):
